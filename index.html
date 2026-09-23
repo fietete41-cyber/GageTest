@@ -153,11 +153,28 @@
                 clearTimeout(timer);
             }
         };
-        const buildResultPayload = (student, gameResult, quizResult, satAnswers) => {
+        // เช็คกับชีตว่านักเรียนคนนี้ (รหัส หรือ ชื่อ-สกุล) เคยส่งผลมาก่อนหรือยัง — เคยแล้ว = รอบหลังเรียน, ยังไม่เคย = รอบก่อนเรียน
+        const checkTestType = async (student) => {
+            if (!APPS_SCRIPT_URL) return 'ก่อนเรียน';
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 10000);
+            try {
+                const params = new URLSearchParams({ action: 'check', id: student.id, first: student.first, last: student.last });
+                const res = await fetch(APPS_SCRIPT_URL + '?' + params.toString(), { method: 'GET', signal: ctrl.signal });
+                const data = await res.json();
+                return data.exists ? 'หลังเรียน' : 'ก่อนเรียน';
+            } catch (e) {
+                return 'ก่อนเรียน';
+            } finally {
+                clearTimeout(timer);
+            }
+        };
+        const buildResultPayload = (student, gameResult, quizResult, satAnswers, testType) => {
             const g = gameResult || {}; const q = quizResult || {};
             const sat = satAnswers ? satSummary(satAnswers) : null;
             return {
                 first: student.first, last: student.last, id: student.id, room: student.room,
+                testType: testType || 'ก่อนเรียน',
                 gameScore: g.score ?? null, gameFeedback: g.feedback || '',
                 quizScore: q.score ?? null, quizCorrect: q.correct ?? null,
                 finalScore10: (g.score != null && q.score != null) ? Number(((g.score + q.score) / 20).toFixed(1)) : null,
@@ -530,9 +547,14 @@
             const [sid, setSid] = useState('');
             const [room, setRoom] = useState('');
             const [err, setErr] = useState('');
-            const submit = () => {
+            const [checking, setChecking] = useState(false);
+            const submit = async () => {
                 if (!first.trim() || !last.trim() || !sid.trim() || !room.trim()) { setErr('กรอกข้อมูลให้ครบทุกช่อง'); return; }
-                onStart({ first: first.trim(), last: last.trim(), id: sid.trim(), room: room.trim() });
+                const s = { first: first.trim(), last: last.trim(), id: sid.trim(), room: room.trim() };
+                setChecking(true);
+                const testType = await checkTestType(s);
+                setChecking(false);
+                onStart(s, testType);
             };
             const onEnter = (e) => { if (e.key === 'Enter') submit(); };
             const inputCls = "w-full bg-white border border-sky-400/40 rounded-lg px-3 py-2 mb-3 text-[#0f2440] outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-400/25 transition";
@@ -552,7 +574,7 @@
                                 <li>ห้ามสลับไปแอปอื่นระหว่างทำ</li>
                                 <li>ห้ามปิดหรือรีเฟรชหน้านี้</li>
                             </ul>
-                            <div className="mt-1">ระบบตรวจจับอัตโนมัติ — พบว่าฝ่าฝืน จะถือว่า<b>ทุจริต</b> ยกเลิกผลและออกจากระบบทันที </div>
+                            <div className="mt-1">ระบบตรวจจับอัตโนมัติ — พบว่าฝ่าฝืน จะถือว่า<b>ทุจริต</b> ยกเลิกผลและออกจากระบบทันที (หลังจากทำแบบทดสอบเสร็จ จะให้ทำแบบประเมินความพึงพอใจต่อ — เฉพาะรอบหลังเรียน)</div>
                         </div>
                         {cheatMsg && (
                             <div className="bg-red-100 border border-red-300 rounded-lg px-3 py-2 text-xs text-red-600 mb-4 relative z-10">
@@ -568,8 +590,10 @@
                         <label className="block text-sm text-[#0f2440] mb-1">ห้อง</label>
                         <input value={room} onChange={e => { setRoom(e.target.value); setErr(''); }} onKeyDown={onEnter} className={inputCls} placeholder="เช่น ปวช.2/1" />
                         {err && <p className="text-red-500 text-sm mb-2"><i className="fa-solid fa-circle-exclamation mr-1"></i> {err}</p>}
-                        <button onClick={submit} className="w-full py-3 mt-1 rounded-lg font-bold glow-blue transition-colors bg-gradient-to-r from-sky-400 to-cyan-300 hover:from-sky-300 hover:to-cyan-200 text-[#062033]">
-                            <i className="fa-solid fa-right-to-bracket mr-2"></i> เริ่มทำแบบทดสอบ
+                        <button onClick={submit} disabled={checking} className="w-full py-3 mt-1 rounded-lg font-bold glow-blue transition-colors bg-gradient-to-r from-sky-400 to-cyan-300 hover:from-sky-300 hover:to-cyan-200 text-[#062033] disabled:opacity-70">
+                            {checking
+                                ? <><i className="fa-solid fa-spinner fa-spin mr-2"></i> กำลังตรวจสอบ...</>
+                                : <><i className="fa-solid fa-right-to-bracket mr-2"></i> เริ่มทำแบบทดสอบ</>}
                         </button>
                         <button onClick={onTeacher} className="w-full mt-3 text-xs text-slate-400 hover:text-blue-700 transition relative z-10">
                             <i className="fa-solid fa-chalkboard-user mr-1"></i> สำหรับครูผู้สอน
@@ -963,26 +987,43 @@
               choices: ['ปิดวาล์ว Low และ High ของเกจให้สนิทก่อนถอดสาย', 'ถอดสายกลาง (Service Hose) ออกก่อนเป็นอันดับแรกโดยไม่ต้องปิดวาล์ว', 'เปิดวาล์ว High ค้างไว้เพื่อระบายความดัน', 'ไม่จำเป็นต้องปิดวาล์วใดๆ ก่อนถอด'], correct: 0 }
         ];
 
+        function shuffleArray(arr) {
+            const a = arr.slice();
+            for (let i = a.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [a[i], a[j]] = [a[j], a[i]];
+            }
+            return a;
+        }
+        // สุ่มลำดับข้อ + สุ่มลำดับตัวเลือกในแต่ละข้อ (กันจำตำแหน่งคำตอบข้ามรอบก่อน/หลังเรียน)
+        function shuffleQuiz(questions) {
+            return shuffleArray(questions).map(q => {
+                const order = shuffleArray(q.choices.map((_, i) => i));
+                return { q: q.q, choices: order.map(i => q.choices[i]), correct: order.indexOf(q.correct) };
+            });
+        }
+
         const QuizSection = ({ onSubmit }) => {
+            const [quiz] = useState(() => shuffleQuiz(QUIZ_QUESTIONS));
             const [answers, setAnswers] = useState({});
             const [showErr, setShowErr] = useState(false);
             const answeredCount = Object.keys(answers).length;
-            const allAnswered = answeredCount === QUIZ_QUESTIONS.length;
+            const allAnswered = answeredCount === quiz.length;
 
             const submit = () => {
                 if (!allAnswered) { setShowErr(true); return; }
                 let correct = 0;
-                QUIZ_QUESTIONS.forEach((q, i) => { if (answers[i] === q.correct) correct++; });
+                quiz.forEach((q, i) => { if (answers[i] === q.correct) correct++; });
                 onSubmit(correct * 10, correct);
             };
 
             return (
                 <div className="max-w-3xl mx-auto p-4 sm:p-6 animate-fade-in">
                     <h2 className="text-2xl font-bold text-cyan-400 mb-1"><i className="fa-solid fa-list-check mr-2"></i>แบบทดสอบความรู้ — เกจแมนิโฟลด์ & การทำความเย็น</h2>
-                    <p className="text-slate-500 text-sm mb-4">ตอบให้ครบทุกข้อ ({answeredCount}/{QUIZ_QUESTIONS.length}) แล้วกดส่งคำตอบ · ข้อละ 10 คะแนน (เต็ม 100)</p>
+                    <p className="text-slate-500 text-sm mb-4">ตอบให้ครบทุกข้อ ({answeredCount}/{quiz.length}) แล้วกดส่งคำตอบ · ข้อละ 10 คะแนน (เต็ม 100)</p>
                     {showErr && !allAnswered && <div className="bg-red-100 border border-red-300 rounded-lg px-3 py-2 text-sm text-red-600 mb-4"><i className="fa-solid fa-triangle-exclamation mr-2"></i>กรุณาตอบให้ครบทุกข้อก่อนส่งคำตอบ</div>}
                     <div className="space-y-4 mb-6">
-                        {QUIZ_QUESTIONS.map((q, i) => (
+                        {quiz.map((q, i) => (
                             <div key={i} className="frost-card rounded-xl p-4">
                                 <div className="font-semibold text-[#0f2440] mb-3">{i + 1}. {q.q}</div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1103,7 +1144,7 @@
         /* ============================================================
            สรุปผลรวม — คะแนนเกม + คะแนนความรู้ เฉลี่ยลงมาเป็นเต็ม 10
         ============================================================ */
-        const FinalReport = ({ student, gameResult, quizResult, satAnswers, onRestart }) => {
+        const FinalReport = ({ student, gameResult, quizResult, satAnswers, testType, onRestart }) => {
             const final10 = ((gameResult.score + quizResult.score) / 20).toFixed(1);
             const passed = Number(final10) >= 5;
             const sat = satAnswers ? satSummary(satAnswers) : null;
@@ -1114,7 +1155,7 @@
                 if (submitStatus === 'sending' || submitStatus === 'ok') return;
                 if (!canSubmit) { setSubmitStatus('nourl'); return; }
                 setSubmitStatus('sending');
-                const res = await submitResultToSheet(buildResultPayload(student, gameResult, quizResult, satAnswers));
+                const res = await submitResultToSheet(buildResultPayload(student, gameResult, quizResult, satAnswers, testType));
                 setSubmitStatus(res.ok ? 'ok' : 'error');
             };
             useEffect(() => { if (canSubmit && submitStatus === 'idle') doSubmit(); }, []);
@@ -1123,6 +1164,7 @@
                     <div className="frost-card rounded-3xl p-8 md:p-10 text-center">
                         <i className={`fa-solid ${passed ? 'fa-award text-cyan-300' : 'fa-clipboard-check text-sky-300'} text-7xl mb-4 drop-shadow-[0_0_22px_rgba(56,189,248,0.55)]`}></i>
                         <h2 className="text-3xl font-black text-white mb-1">สรุปผลการทดสอบ</h2>
+                        <span className="inline-block text-xs font-bold px-3 py-1 rounded-full border border-sky-400/40 text-sky-100 bg-[#08213f]/60 mb-2">รอบ{testType || 'ก่อนเรียน'}</span>
                         <p className="text-sky-100 text-sm mb-6">{student.first} {student.last} · รหัส {student.id} · ห้อง {student.room}</p>
 
                         <div className="bg-[#08213f]/80 rounded-2xl p-6 border-2 border-sky-400/35 mb-6 glow-blue">
@@ -1232,14 +1274,18 @@
             const [gameResult, setGameResult] = useState(null);   // {score, feedback}
             const [quizResult, setQuizResult] = useState(null);   // {score, correct}
             const [satAnswers, setSatAnswers] = useState(null);   // {0..14: 1-5}
+            const [testType, setTestType] = useState('ก่อนเรียน');   // 'ก่อนเรียน' | 'หลังเรียน' — กำหนดจากการเช็คชื่อ/รหัสซ้ำตอนล็อกอิน
             const [cheatMsg, setCheatMsg] = useState('');
 
-            const startTest = (s) => { setStudent(s); setStage('game'); setCheatMsg(''); };
+            const startTest = (s, type) => { setStudent(s); setTestType(type || 'ก่อนเรียน'); setStage('game'); setCheatMsg(''); };
             const handleGameDone = (score, feedback) => { setGameResult({ score, feedback }); setStage('quiz'); };
-            const handleQuizDone = (score, correct) => { setQuizResult({ score, correct }); setStage('satisfaction'); };
+            const handleQuizDone = (score, correct) => {
+                setQuizResult({ score, correct });
+                setStage(testType === 'หลังเรียน' ? 'satisfaction' : 'result');
+            };
             const handleSatisfactionDone = (answers) => { setSatAnswers(answers); setStage('result'); };
             const restart = () => {
-                setStudent(null); setStage('login');
+                setStudent(null); setStage('login'); setTestType('ก่อนเรียน');
                 setGameResult(null); setQuizResult(null); setSatAnswers(null);
             };
 
@@ -1255,11 +1301,11 @@
                     if (!armed) return;
                     armed = false;
                     if (APPS_SCRIPT_URL) {
-                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers);
+                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers, testType);
                         p.cheated = true; p.cheatReason = reason;
                         submitResultToSheet(p);   // fire-and-forget
                     }
-                    setStudent(null); setStage('login');
+                    setStudent(null); setStage('login'); setTestType('ก่อนเรียน');
                     setGameResult(null); setQuizResult(null); setSatAnswers(null);
                     setCheatMsg('ตรวจพบการออกจากหน้าจอระหว่างทำแบบทดสอบ (' + reason + ') — ระบบถือว่าทุจริต บันทึกผลไว้แล้ว และนำคุณออกจากระบบ กรุณาติดต่อผู้คุมสอบ');
                 };
@@ -1270,7 +1316,7 @@
                 const onPageHide = () => {
                     if (!armed) return;
                     if (APPS_SCRIPT_URL && navigator.sendBeacon) {
-                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers);
+                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers, testType);
                         p.cheated = true; p.cheatReason = 'ปิด/ออกจากหน้าต่างระหว่างทำแบบทดสอบ';
                         try { navigator.sendBeacon(APPS_SCRIPT_URL, new Blob([JSON.stringify(p)], { type: 'text/plain;charset=utf-8' })); } catch (e) {}
                     }
@@ -1287,7 +1333,7 @@
                     window.removeEventListener('focus', onFocus);
                     window.removeEventListener('pagehide', onPageHide);
                 };
-            }, [cheatActive, student, gameResult, quizResult, satAnswers]);
+            }, [cheatActive, student, gameResult, quizResult, satAnswers, testType]);
 
             if (stage === 'teacherGate') return <TeacherGate onSuccess={() => setStage('teacher')} onBack={() => setStage('login')} />;
             if (stage === 'teacher') return <TeacherStats onBack={() => setStage('login')} />;
@@ -1296,7 +1342,7 @@
             if (stage === 'game') body = <GameFrame mode={mode} onDone={handleGameDone} />;
             else if (stage === 'quiz') body = <QuizSection onSubmit={handleQuizDone} />;
             else if (stage === 'satisfaction') body = <SatisfactionSurvey onSubmit={handleSatisfactionDone} />;
-            else if (stage === 'result') body = <FinalReport student={student} gameResult={gameResult} quizResult={quizResult} satAnswers={satAnswers} onRestart={restart} />;
+            else if (stage === 'result') body = <FinalReport student={student} gameResult={gameResult} quizResult={quizResult} satAnswers={satAnswers} testType={testType} onRestart={restart} />;
 
             if (!student) return <div className="min-h-screen"><StudentLogin onStart={startTest} onTeacher={() => setStage('teacherGate')} cheatMsg={cheatMsg} /></div>;
 
@@ -1311,6 +1357,9 @@
                             </div>
                         </div>
                         <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-center shrink-0">
+                            <span className={`text-xs px-3 py-1.5 rounded-lg border font-bold ${testType === 'หลังเรียน' ? 'bg-emerald-50 border-emerald-400/50 text-emerald-700' : 'bg-white border-sky-400/30 text-blue-700'}`}>
+                                <i className="fa-solid fa-calendar-day mr-1"></i>รอบ{testType}
+                            </span>
                             <span className="text-xs px-3 py-1.5 rounded-lg bg-white border border-sky-400/30 text-blue-700 font-bold">
                                 <i className="fa-solid fa-user-graduate mr-1"></i>{student.first} {student.last} · {student.room}
                             </span>
