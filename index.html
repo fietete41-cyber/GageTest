@@ -1,4 +1,4 @@
-<!DOCTYPE html> 
+<!DOCTYPE html>
 <html lang="th">
 <head>
     <meta charset="UTF-8">
@@ -154,12 +154,13 @@
             }
         };
         const buildResultPayload = (student, gameResult, quizResult, satAnswers) => {
+            const g = gameResult || {}; const q = quizResult || {};
             const sat = satAnswers ? satSummary(satAnswers) : null;
             return {
                 first: student.first, last: student.last, id: student.id, room: student.room,
-                gameScore: gameResult.score, gameFeedback: gameResult.feedback || '',
-                quizScore: quizResult.score, quizCorrect: quizResult.correct,
-                finalScore10: Number(((gameResult.score + quizResult.score) / 20).toFixed(1)),
+                gameScore: g.score ?? null, gameFeedback: g.feedback || '',
+                quizScore: q.score ?? null, quizCorrect: q.correct ?? null,
+                finalScore10: (g.score != null && q.score != null) ? Number(((g.score + q.score) / 20).toFixed(1)) : null,
                 satDim1: sat ? Number(sat.dims[0].mean.toFixed(2)) : null,
                 satDim2: sat ? Number(sat.dims[1].mean.toFixed(2)) : null,
                 satDim3: sat ? Number(sat.dims[2].mean.toFixed(2)) : null,
@@ -523,7 +524,7 @@
         /* ============================================================
            หน้าลงทะเบียนผู้ทดสอบ — ชื่อ / นามสกุล / รหัสนักเรียน / ห้อง
         ============================================================ */
-        const StudentLogin = ({ onStart, onTeacher }) => {
+        const StudentLogin = ({ onStart, onTeacher, cheatMsg }) => {
             const [first, setFirst] = useState('');
             const [last, setLast] = useState('');
             const [sid, setSid] = useState('');
@@ -544,6 +545,11 @@
                             <h1 className="text-lg font-extrabold leading-[1.4] py-1 text-transparent bg-clip-text bg-gradient-to-r from-blue-800 to-blue-600">แบบทดสอบความรู้เรื่องเกจแมนิโฟลด์</h1>
                             <p className="text-xs text-blue-700/70 mt-1">กรอกข้อมูลผู้เข้าทดสอบก่อนเริ่ม</p>
                         </div>
+                        {cheatMsg && (
+                            <div className="bg-red-100 border border-red-300 rounded-lg px-3 py-2 text-xs text-red-600 mb-4 relative z-10">
+                                <i className="fa-solid fa-triangle-exclamation mr-1"></i> {cheatMsg}
+                            </div>
+                        )}
                         <label className="block text-sm text-[#0f2440] mb-1">ชื่อจริง</label>
                         <input value={first} autoFocus onChange={e => { setFirst(e.target.value); setErr(''); }} onKeyDown={onEnter} className={inputCls} />
                         <label className="block text-sm text-[#0f2440] mb-1">นามสกุล</label>
@@ -1217,8 +1223,9 @@
             const [gameResult, setGameResult] = useState(null);   // {score, feedback}
             const [quizResult, setQuizResult] = useState(null);   // {score, correct}
             const [satAnswers, setSatAnswers] = useState(null);   // {0..14: 1-5}
+            const [cheatMsg, setCheatMsg] = useState('');
 
-            const startTest = (s) => { setStudent(s); setStage('game'); };
+            const startTest = (s) => { setStudent(s); setStage('game'); setCheatMsg(''); };
             const handleGameDone = (score, feedback) => { setGameResult({ score, feedback }); setStage('quiz'); };
             const handleQuizDone = (score, correct) => { setQuizResult({ score, correct }); setStage('satisfaction'); };
             const handleSatisfactionDone = (answers) => { setSatAnswers(answers); setStage('result'); };
@@ -1226,6 +1233,52 @@
                 setStudent(null); setStage('login');
                 setGameResult(null); setQuizResult(null); setSatAnswers(null);
             };
+
+            /* ---- กันโกง: ระหว่างทำแบบทดสอบ (เกม/ควิซ) ห้ามสลับแท็บ/ย่อหน้าต่าง (ไม่รวมช่วงประเมินความพึงพอใจ) ---- */
+            const cheatActive = !!student && (stage === 'game' || stage === 'quiz');
+            useEffect(() => {
+                if (!cheatActive) return;
+                let armed = false;
+                const armT = setTimeout(() => { armed = true; }, 1000);   // เว้นช่วงตอนโหลด/เปลี่ยนขั้นตอน กันเตือนผิดพลาด
+                let blurT;
+
+                const violate = (reason) => {
+                    if (!armed) return;
+                    armed = false;
+                    if (APPS_SCRIPT_URL) {
+                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers);
+                        p.cheated = true; p.cheatReason = reason;
+                        submitResultToSheet(p);   // fire-and-forget
+                    }
+                    setStudent(null); setStage('login');
+                    setGameResult(null); setQuizResult(null); setSatAnswers(null);
+                    setCheatMsg('ตรวจพบการออกจากหน้าจอระหว่างทำแบบทดสอบ (' + reason + ') — ระบบถือว่าทุจริต บันทึกผลไว้แล้ว และนำคุณออกจากระบบ กรุณาติดต่อผู้คุมสอบ');
+                };
+
+                const onVis = () => { if (document.visibilityState === 'hidden') violate('สลับหน้าจอ / ย่อหน้าต่าง / ปิดจอ'); };
+                const onBlur = () => { blurT = setTimeout(() => { if (!document.hasFocus()) violate('สลับไปหน้าต่าง/แท็บ/แอปอื่น'); }, 450); };
+                const onFocus = () => { clearTimeout(blurT); };
+                const onPageHide = () => {
+                    if (!armed) return;
+                    if (APPS_SCRIPT_URL && navigator.sendBeacon) {
+                        const p = buildResultPayload(student, gameResult, quizResult, satAnswers);
+                        p.cheated = true; p.cheatReason = 'ปิด/ออกจากหน้าต่างระหว่างทำแบบทดสอบ';
+                        try { navigator.sendBeacon(APPS_SCRIPT_URL, new Blob([JSON.stringify(p)], { type: 'text/plain;charset=utf-8' })); } catch (e) {}
+                    }
+                };
+
+                document.addEventListener('visibilitychange', onVis);
+                window.addEventListener('blur', onBlur);
+                window.addEventListener('focus', onFocus);
+                window.addEventListener('pagehide', onPageHide);
+                return () => {
+                    clearTimeout(armT); clearTimeout(blurT);
+                    document.removeEventListener('visibilitychange', onVis);
+                    window.removeEventListener('blur', onBlur);
+                    window.removeEventListener('focus', onFocus);
+                    window.removeEventListener('pagehide', onPageHide);
+                };
+            }, [cheatActive, student, gameResult, quizResult, satAnswers]);
 
             if (stage === 'teacherGate') return <TeacherGate onSuccess={() => setStage('teacher')} onBack={() => setStage('login')} />;
             if (stage === 'teacher') return <TeacherStats onBack={() => setStage('login')} />;
@@ -1236,7 +1289,7 @@
             else if (stage === 'satisfaction') body = <SatisfactionSurvey onSubmit={handleSatisfactionDone} />;
             else if (stage === 'result') body = <FinalReport student={student} gameResult={gameResult} quizResult={quizResult} satAnswers={satAnswers} onRestart={restart} />;
 
-            if (!student) return <div className="min-h-screen"><StudentLogin onStart={startTest} onTeacher={() => setStage('teacherGate')} /></div>;
+            if (!student) return <div className="min-h-screen"><StudentLogin onStart={startTest} onTeacher={() => setStage('teacherGate')} cheatMsg={cheatMsg} /></div>;
 
             return (
                 <div className="min-h-screen flex flex-col">
@@ -1285,3 +1338,4 @@
     </script>
 </body>
 </html>
+
