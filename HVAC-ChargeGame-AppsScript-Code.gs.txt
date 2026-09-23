@@ -72,27 +72,20 @@ function doPost(e) {
 }
 
 // เปิดลิงก์ /exec ด้วยเบราว์เซอร์เพื่อเช็คว่า Deploy สำเร็จ
-// เรียกด้วย ?action=check&id=...&first=...&last=... เพื่อเช็คว่านักเรียนคนนี้เคยส่งผลมาก่อนหรือยัง
+// เรียกด้วย ?action=check&id=... เพื่อเช็คว่ารหัสนักเรียนนี้เคยส่งผลมาก่อนหรือยัง (เช็คจากรหัสนักเรียนเท่านั้น)
 function doGet(e) {
   var params = (e && e.parameter) || {};
   if (params.action === 'check') {
     var id = String(params.id || '').trim();
-    var first = String(params.first || '').trim();
-    var last = String(params.last || '').trim();
     var exists = false;
     try {
       var ss = SpreadsheetApp.getActiveSpreadsheet();
       var sh = ss.getSheetByName(SHEET_NAME);
-      if (sh && sh.getLastRow() > 1) {
-        var data = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();   // เวลา, ชื่อจริง, นามสกุล, รหัสนักเรียน, ห้อง
+      if (id && sh && sh.getLastRow() > 1) {
+        var data = sh.getRange(2, 4, sh.getLastRow() - 1, 1).getValues();   // คอลัมน์ D = รหัสนักเรียน
         for (var i = 0; i < data.length; i++) {
-          var rFirst = String(data[i][1] || '').trim();
-          var rLast = String(data[i][2] || '').trim();
-          var rId = String(data[i][3] || '').trim();
-          if ((id && rId === id) || (first && last && rFirst === first && rLast === last)) {
-            exists = true;
-            break;
-          }
+          var rId = String(data[i][0] || '').trim();
+          if (rId === id) { exists = true; break; }
         }
       }
     } catch (err) {}
