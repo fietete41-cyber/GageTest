@@ -1,0 +1,104 @@
+/*************************************************************
+ *  แบบทดสอบความรู้เรื่องเกจแมนิโฟลด์ (HVAC-Charge-Game) — ตัวรับผลทดสอบ (Google Apps Script)
+ *
+ *  วิธีติดตั้ง
+ *  1) เปิด Google Sheet ใหม่ 1 ไฟล์ (ใช้เก็บผลทดสอบ)
+ *  2) เมนู  ส่วนขยาย (Extensions) → Apps Script
+ *  3) ลบโค้ดเดิมทิ้ง แล้ววางโค้ดนี้ทั้งหมด → บันทึก (ไอคอนแผ่นดิสก์)
+ *  4) กด  ปรับใช้ (Deploy) → การปรับใช้ใหม่ (New deployment)
+ *       - ประเภท: แอปเว็บ (Web app)
+ *       - ดำเนินการในนาม: ฉัน (Me)
+ *       - ผู้ที่มีสิทธิ์เข้าถึง: ทุกคน (Anyone)
+ *     → ปรับใช้ → อนุญาตสิทธิ์ → คัดลอกลิงก์ที่ลงท้ายด้วย /exec
+ *  5) เปิดไฟล์ HVAC-Charge-Game.html หา  const APPS_SCRIPT_URL = '';
+ *     วางลิงก์ /exec ลงในเครื่องหมาย ' ' แล้วบันทึก
+ *
+ *  หมายเหตุ: ถ้าแก้โค้ดนี้ภายหลัง ต้อง Deploy → จัดการการปรับใช้ →
+ *  แก้ไข (ดินสอ) → เวอร์ชัน: ใหม่ → ปรับใช้  (ลิงก์ /exec เดิมจะใช้ได้เลย)
+ *
+ *  หมายเหตุอัปเดตรอบนี้: เพิ่มคอลัมน์ "ประเภท (ก่อน/หลังเรียน)" ต่อท้ายคอลัมน์ "อุปกรณ์"
+ *  (คอลัมน์เดิมไม่ขยับ — แค่เพิ่มหัวตารางในคอลัมน์ว่างถัดไปเอง ไม่ต้องแทรกคอลัมน์)
+ *  และเพิ่ม doGet(action=check) ให้หน้าเว็บเช็คว่านักเรียนเคยส่งผลมาก่อนหรือยัง
+ *  (ใช้ตัดสินว่ารอบนี้เป็นก่อนเรียนหรือหลังเรียน)
+ *************************************************************/
+
+var SHEET_NAME = 'ผลทดสอบเกจแมนิโฟลด์';   // ชื่อชีตที่จะเก็บข้อมูล (สร้างให้อัตโนมัติถ้ายังไม่มี)
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+
+    var data = JSON.parse(e.postData.contents);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sh = ss.getSheetByName(SHEET_NAME);
+    if (!sh) {
+      sh = ss.insertSheet(SHEET_NAME);
+      sh.appendRow([
+        'เวลาบันทึก', 'ชื่อจริง', 'นามสกุล', 'รหัสนักเรียน', 'ห้อง',
+        'คะแนนเกม (เต็ม 100)', 'ผลเกม (คำอธิบาย)',
+        'คะแนนความรู้ (เต็ม 100)', 'ตอบถูก (เต็ม 10)',
+        'คะแนนรวม (เต็ม 10)',
+        'พึงพอใจ ด้านที่1 คุณภาพสื่อ (เต็ม5)', 'พึงพอใจ ด้านที่2 กิจกรรมการเรียนรู้ (เต็ม5)', 'พึงพอใจ ด้านที่3 ประโยชน์ที่ได้รับ (เต็ม5)',
+        'พึงพอใจ เฉลี่ยรวม (เต็ม5)', 'ระดับความพึงพอใจ',
+        'ทุจริต', 'อุปกรณ์', 'ประเภท (ก่อน/หลังเรียน)'
+      ]);
+      sh.setFrozenRows(1);
+    }
+
+    sh.appendRow([
+      new Date(),
+      data.first || '', data.last || '', data.id || '', data.room || '',
+      data.gameScore, data.gameFeedback || '',
+      data.quizScore, data.quizCorrect,
+      data.finalScore10,
+      data.satDim1, data.satDim2, data.satDim3, data.satOverall, data.satLevel || '',
+      data.cheated ? ('ทุจริต — ' + (data.cheatReason || '')) : '',
+      data.userAgent || '',
+      data.testType || ''
+    ]);
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: true }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    return ContentService
+      .createTextOutput(JSON.stringify({ ok: false, error: String(err) }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// เปิดลิงก์ /exec ด้วยเบราว์เซอร์เพื่อเช็คว่า Deploy สำเร็จ
+// เรียกด้วย ?action=check&id=...&first=...&last=... เพื่อเช็คว่านักเรียนคนนี้เคยส่งผลมาก่อนหรือยัง
+function doGet(e) {
+  var params = (e && e.parameter) || {};
+  if (params.action === 'check') {
+    var id = String(params.id || '').trim();
+    var first = String(params.first || '').trim();
+    var last = String(params.last || '').trim();
+    var exists = false;
+    try {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      var sh = ss.getSheetByName(SHEET_NAME);
+      if (sh && sh.getLastRow() > 1) {
+        var data = sh.getRange(2, 1, sh.getLastRow() - 1, 5).getValues();   // เวลา, ชื่อจริง, นามสกุล, รหัสนักเรียน, ห้อง
+        for (var i = 0; i < data.length; i++) {
+          var rFirst = String(data[i][1] || '').trim();
+          var rLast = String(data[i][2] || '').trim();
+          var rId = String(data[i][3] || '').trim();
+          if ((id && rId === id) || (first && last && rFirst === first && rLast === last)) {
+            exists = true;
+            break;
+          }
+        }
+      }
+    } catch (err) {}
+    return ContentService
+      .createTextOutput(JSON.stringify({ exists: exists }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  return ContentService.createTextOutput('HVAC charge-game receiver พร้อมทำงาน');
+}
